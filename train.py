@@ -33,13 +33,20 @@ def train():
 
     # Force input pipeline to CPU:0 to avoid operations sometimes ending up on
     # GPU and resulting in a slow down.
-    dataset = model.distorted_inputs()
+    dataset = model.inputs(False, bases_info=False)
     iterator = dataset.make_one_shot_iterator()
     features, labels = iterator.get_next()
+    
+    # Choose which basestation to use
+    bases_idx, bases_id = model.inferenceRL(features, False)
+    bases_info_dataset = model.inputs(False, bases_info=True, bases_idx, bases_id)
+    iterator_info = bases_info_dataset.make_one_shot_iterator()
+    bases_info = iterator_info.get_next()
+    advanced_features = tf.concat([features, bases_info],axis=1)
 
     # Build a Graph that computes the logits predictions from the
     # inference model.
-    logits = model.inference(features, False)
+    logits = model.inference_reward(features, False)
 
     # Calculate loss.
     loss = model.loss(logits, labels)

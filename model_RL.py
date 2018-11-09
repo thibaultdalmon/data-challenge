@@ -92,23 +92,12 @@ def _variable_with_weight_decay(name, shape, stddev, wd):
     tf.add_to_collection('losses', weight_decay)
   return var
 
-def distorted_inputs():
-  """Construct input for training
-  Returns:
-    dataset: the dataset processed for the training
-  Raises:
-    ValueError: If no data_dir
-  """
-  if not FLAGS.data_dir:
-    raise ValueError('Please supply a data_dir')
-  dataset = input.init_data(eval_data = False, data_dir=FLAGS.data_dir,
-                                                  batch_size=FLAGS.batch_size)
-  return dataset
-
-def inputs(eval_data):
-  """Construct input for evaluation
+def inputs(eval_data, bases_info, bases_idx=[], bases_id=[]):
+  """Construct input
   Args:
     eval_data: bool, indicating if one should use the train or eval data set.
+    bases_info: indicating if one should load info on basetations.
+    bases_idx: indicating which basetations should be loaded.
   Returns:
     dataset: the dataset processed for evaluation
   Raises:
@@ -116,15 +105,21 @@ def inputs(eval_data):
   """
   if not FLAGS.data_dir:
     raise ValueError('Please supply a data_dir')
-
-  dataset = input.init_data(eval_data=eval_data,
-                                        data_dir=FLAGS.data_dir,
-                                        batch_size=FLAGS.batch_size)
+  
+  if bases_info:
+    dataset = input.info_data(data_dir=FLAGS.data_dir,
+                              batch_size=FLAGS.batch_size
+                              bases_idx=bases_idx
+                              bases_idx=bases_id)
+  else:
+    dataset = input.init_data(eval_data=eval_data,
+                              data_dir=FLAGS.data_dir,
+                              batch_size=FLAGS.batch_size)
   return dataset
 
 
-def inference(images, eval):
-  """Build the autoencoder model.
+def inference_reward(images, eval):
+  """Build the scoring model.
   Args:
     images: Images returned from distorted_inputs() or inputs().
   Returns:
@@ -208,6 +203,92 @@ def inference(images, eval):
     
     
   return values
+  
+def inferenceRL(images, eval):
+  """Build the RL model.
+  Args:
+    images: Images returned from distorted_inputs() or inputs().
+  Returns:
+    values: input prediction.
+  """
+  # We instantiate all variables using tf.get_variable() instead of
+  # tf.Variable() in order to share variables across multiple GPU training runs.
+  # If we only ran this model on a single GPU, we could simplify this function
+  # by replacing all instances of tf.get_variable() with tf.Variable().
+  #
+  
+  #if not eval:
+  #  images = tf.contrib.nn.alpha_dropout(images, 0.8)
+
+  with tf.name_scope("init") as scope:
+    with tf.name_scope("dense_1") as scope:
+      in_fully = tf.layers.batch_normalization(images)
+      acti_fully = tf.nn.selu(in_fully, 'selu')
+      _activation_summary(acti_fully)
+      out_fully = tf.layers.dense(
+            acti_fully,
+            units=1024,
+            kernel_initializer=tf.truncated_normal_initializer(stddev=5e-2))
+      out_fully = tf.reshape(out_fully, [FLAGS.batch_size, 1024])
+    with tf.name_scope("dense_2") as scope:
+      images = tf.layers.batch_normalization(out_fully, name=scope + 'batch_normalization')
+      images = tf.nn.selu(images, 'selu')
+      _activation_summary(images)
+      kernel = _variable_with_weight_decay(scope + 'weights',
+                                           shape=[1024,512],
+                                           stddev=5e-2,
+                                           wd=None)
+      biases = _variable_on_cpu(scope + 'biases', [512], tf.constant_initializer(0.0))
+      out_dense_2 = tf.add(tf.matmul(images,kernel), biases)
+    with tf.name_scope("dense_3") as scope:
+      images = tf.layers.batch_normalization(out_dense_2, name=scope + 'batch_normalization')
+      images = tf.nn.selu(images, 'selu')
+      _activation_summary(images)
+      kernel = _variable_with_weight_decay(scope + 'weights',
+                                           shape=[512,256],
+                                           stddev=5e-2,
+                                           wd=None)
+      biases = _variable_on_cpu(scope + 'biases', [256], tf.constant_initializer(0.0))
+      out_dense_3 = tf.add(tf.matmul(images,kernel), biases)
+    with tf.name_scope("dense_4") as scope:
+      images = tf.layers.batch_normalization(out_dense_3, name=scope + 'batch_normalization')
+      images = tf.nn.selu(images, 'selu')
+      _activation_summary(images)
+      kernel = _variable_with_weight_decay(scope + 'weights',
+                                           shape=[256,512],
+                                           stddev=5e-2,
+                                           wd=None)
+      biases = _variable_on_cpu(scope + 'biases', [512], tf.constant_initializer(0.0))
+      out_dense_4 = tf.add(tf.matmul(images,kernel), biases)
+    with tf.name_scope("dense_5") as scope:
+      images = tf.layers.batch_normalization(out_dense_4, name=scope + 'batch_normalization')
+      images = tf.nn.selu(images, 'selu')
+      _activation_summary(images)
+      kernel = _variable_with_weight_decay(scope + 'weights',
+                                           shape=[512,1024],
+                                           stddev=5e-2,
+                                           wd=None)
+      biases = _variable_on_cpu(scope + 'biases', [1024], tf.constant_initializer(0.0))
+      out_dense_5 = tf.add(tf.matmul(images,kernel), biases)
+
+  with tf.name_scope('predict') as scope:
+
+    pre_activation = tf.layers.batch_normalization(out_dense_5, name=scope + 'batch_normalization')
+    pre_activation = tf.nn.selu(pre_activation, 'selu')
+    _activation_summary(pre_activation)
+    
+    #if not eval:
+    #  pre_activation = tf.contrib.nn.alpha_dropout(pre_activation, 0.8)
+      
+    with tf.name_scope('logits') as scope:
+      weights = _variable_with_weight_decay(scope + 'weights', shape=[1024,907],
+                                          stddev=0.04, wd=0.004)
+      biases = _variable_on_cpu(scope + 'biases', [907], tf.constant_initializer(0.1))
+      bases_idx = tf.matmul(pre_activation, weights) + biases
+      _activation_summary(values)
+    
+    
+  return bases_idx, bases_id
 
 def loss(values, labels):
   """Add L2Loss to all the trainable variables.
